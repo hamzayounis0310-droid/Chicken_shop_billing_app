@@ -741,6 +741,23 @@ function recalcRates() {
   });
 }
 
+// Function to calculate exact pending balance historically or currently
+function getPendingBalance() {
+  if (selectedID === 0) return 0;
+  if (editingBillId && selectedID === loadedClientId) {
+    const cu = clients.find(cl => cl.id === selectedID);
+    if (cu && cu.history) {
+      const idx = cu.history.findIndex(h => h.id === editingBillId);
+      if (idx !== -1) {
+        // Sum all transactions before the edited bill to find the pending balance of that day
+        return cu.history.slice(0, idx).reduce((sum, h) => sum + h.total, 0);
+      }
+    }
+  }
+  const cu = clients.find(c => c.id === selectedID);
+  return cu ? (cu.balance || 0) : 0;
+}
+
 // ============ BILL BUILD ============
 function buildBill() {
   const x = parseFloat(document.getElementById('mundiRate').value) || 0;
@@ -770,8 +787,7 @@ function buildBill() {
   document.getElementById('bBillDate').innerText = new Date().toLocaleDateString('en-PK');
 
   // FIX9: show pending balance
-  const _cust = selectedID > 0 ? clients.find(c=>c.id===selectedID) : null;
-  const _pend = _cust ? (_cust.balance||0) : 0;
+  const _pend = getPendingBalance();
   const pendRow = document.getElementById('pendingBalanceRow');
   if(pendRow){
     if(_pend > 0){
@@ -806,8 +822,7 @@ function updateBillRow(id, rate, val) {
   document.getElementById('outTotal').innerText = grand;
   document.getElementById('outSubtotal') && (document.getElementById('outSubtotal').innerText = grand);
   // FIX9: update pending total display
-  const _c = selectedID > 0 ? clients.find(c=>c.id===selectedID) : null;
-  const pend = _c ? (_c.balance||0) : 0;
+  const pend = getPendingBalance();
   if(pend > 0 && document.getElementById('outTotalPayable'))
     document.getElementById('outTotalPayable').innerText = grand + pend;
   // update pay for cash customer
@@ -821,8 +836,7 @@ function delRow(id) {
 }
 function calcFinal() {
   const t    = parseFloat(document.getElementById('outTotal').innerText) || 0;
-  const _cu  = selectedID > 0 ? clients.find(c=>c.id===selectedID) : null;
-  const pend = _cu ? (_cu.balance||0) : 0;
+  const pend = getPendingBalance();
   const totalOwed = t + pend;
   // Discount
   let disc = parseFloat(document.getElementById('discAmount')?.value) || 0;
@@ -897,8 +911,7 @@ function buildBillDiv() {
   var tot      = parseFloat(document.getElementById('outTotal').innerText)||0;
   var dv       = parseFloat(document.getElementById('discAmount')?document.getElementById('discAmount').value:0)||0;
   var disc     = discType==='%' ? Math.round(tot*dv/100) : Math.min(dv,tot);
-  var _cu      = selectedID>0 ? clients.find(function(c){return c.id===selectedID;}) : null;
-  var pend     = _cu ? (_cu.balance||0) : 0;
+  var pend     = getPendingBalance();
   var grandOwed= tot + pend - disc;
   var totalPaid= payments.reduce(function(s,p){return s+p.amt;},0);
   var rem      = grandOwed - totalPaid;
@@ -1073,8 +1086,7 @@ function getBillHTML() {
   var tot      = parseFloat(document.getElementById('outTotal').innerText) || 0;
   var dv       = parseFloat(document.getElementById('discAmount') ? document.getElementById('discAmount').value : 0) || 0;
   var disc     = discType === '%' ? Math.round(tot * dv / 100) : Math.min(dv, tot);
-  var _cu      = selectedID > 0 ? clients.find(function(c){ return c.id === selectedID; }) : null;
-  var pend     = _cu ? (_cu.balance || 0) : 0;
+  var pend     = getPendingBalance();
   var grandOwed = tot + pend - disc;
   var totalPaid = payments.reduce(function(s, p){ return s + p.amt; }, 0);
   var rem       = grandOwed - totalPaid;
@@ -1309,6 +1321,11 @@ async function shareWAPDF() {
   if (!billElement) return;
 
   try {
+    // FIX: Set the explicit 'value' attribute of all input elements so html2canvas's DOM cloner renders them
+    billElement.querySelectorAll('input').forEach(inp => {
+      inp.setAttribute('value', inp.value);
+    });
+
     // Render the bill element to canvas
     const canvas = await html2canvas(billElement, {
       scale: 2, // Better image quality
@@ -1354,8 +1371,7 @@ function shareWAText() {
   var tot  = parseFloat(document.getElementById('outTotal').innerText)||0;
   var _d   = parseFloat(document.getElementById('discAmount')?.value)||0;
   var disc = discType==='%' ? Math.round(tot*_d/100) : Math.min(_d,tot);
-  var _cu  = selectedID>0 ? clients.find(function(c){return c.id===selectedID;}) : null;
-  var pend = _cu ? (_cu.balance||0) : 0;
+  var pend = getPendingBalance();
   var totalPaid = payments.reduce(function(s,p){return s+p.amt;},0);
   var rem  = (tot+pend-disc) - totalPaid;
   var sep  = '\n─────────────────\n';
@@ -1430,8 +1446,7 @@ function selectPayMethod(method, icon) {
 }
 function getRemainingAmount() {
   const t    = parseFloat(document.getElementById('outTotal').innerText) || 0;
-  const _cu  = selectedID > 0 ? clients.find(c=>c.id===selectedID) : null;
-  const pend = _cu ? (_cu.balance||0) : 0;
+  const pend = getPendingBalance();
   let disc = parseFloat(document.getElementById('discAmount')?.value)||0;
   if(discType==='%') disc=Math.round(t*disc/100); else disc=Math.min(disc,t);
   const netBill = t + pend - disc;
@@ -1513,12 +1528,26 @@ function finalizeOrder() {
     if (selectedID !== 0) {
       const cu = clients.find(cl => cl.id === selectedID);
       if (cu) {
-        cu.history = (cu.history || []).filter(h => h.id !== editingBillId && h.billId !== editingBillId);
-        cu.history.push(order);
-        if (totalPaid > 0) {
-          const methodStr = payments.map(p=>p.method+' Rs '+p.amt).join(' + ');
-          cu.history.push({id:'Pay',date:order.date,total:-totalPaid,type:'Payment',method:methodStr, billId: order.id});
+        if (loadedClientId !== selectedID) {
+          // If the customer changed, we push the updated order to the end of the new customer's history
+          cu.history.push(order);
+          if (totalPaid > 0) {
+            const methodStr = payments.map(p=>p.method+' Rs '+p.amt).join(' + ');
+            cu.history.push({id:'Pay',date:order.date,total:-totalPaid,type:'Payment',method:methodStr, billId: order.id});
+          }
+        } else {
+          // If the customer did not change, we find and preserve the EXACT original chronological position
+          const originalIdx = cu.history.findIndex(h => h.id === editingBillId);
+          cu.history = (cu.history || []).filter(h => h.id !== editingBillId && h.billId !== editingBillId);
+          const insertIdx = originalIdx !== -1 ? Math.min(originalIdx, cu.history.length) : cu.history.length;
+          cu.history.splice(insertIdx, 0, order);
+          if (totalPaid > 0) {
+            const methodStr = payments.map(p=>p.method+' Rs '+p.amt).join(' + ');
+            const paymentEntry = {id:'Pay',date:order.date,total:-totalPaid,type:'Payment',method:methodStr, billId: order.id};
+            cu.history.splice(insertIdx + 1, 0, paymentEntry);
+          }
         }
+        // Recalculate and update the dynamic customer balance correctly based on historical entries
         cu.balance = Math.max(0, cu.history.reduce((sum, h) => sum + h.total, 0));
       }
     }
