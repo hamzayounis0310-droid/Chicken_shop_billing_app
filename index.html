@@ -15,6 +15,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Nastaliq+Urdu:wght@400;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<!-- html2canvas matching the requested feature to generate bill images -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
 <style>
 :root {
@@ -333,6 +335,7 @@ body::before{
       <div style="display:flex;gap:7px;">
         <button class="btn btn-dark btn-sm" onclick="closeModal('historyModal')" style="width:auto;padding:7px 13px;"><i class="fas fa-times"></i></button>
         <button class="btn btn-danger btn-sm" onclick="printStatementPDF()" style="width:auto;padding:7px 11px;font-size:0.75rem;"><i class="fas fa-file-pdf"></i> بیان PDF</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteCurrentCustomer()" style="width:auto;padding:7px 11px;font-size:0.75rem;background:#c0392b;"><i class="fas fa-user-slash"></i> حذف کریں</button>
       </div>
       <h3 id="histCustName" style="color:var(--accent);font-size:1rem;"></h3>
     </div>
@@ -425,9 +428,15 @@ body::before{
 <!-- ====== BILL PAGE ====== -->
 <div id="page-bill" class="page">
   <!-- PREVIEW BANNER -->
-  <div id="previewBanner" style="display:none;align-items:center;justify-content:space-between;background:rgba(232,160,32,0.15);border:1px solid var(--accent);border-radius:12px;padding:10px 14px;margin-bottom:11px;">
-    <button onclick="clearAll()" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-family:'Noto Nastaliq Urdu',serif;font-size:0.78rem;cursor:pointer;"><i class="fas fa-arrow-right"></i> واپس</button>
-    <span style="color:var(--accent);font-weight:700;font-size:0.85rem;"><i class="fas fa-eye" style="margin-left:6px;"></i> پرانا بل — صرف دیکھنے کا موڈ</span>
+  <div id="previewBanner" style="display:none;flex-direction:column;gap:8px;background:rgba(232,160,32,0.15);border:1px solid var(--accent);border-radius:12px;padding:12px;margin-bottom:11px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <span style="color:var(--accent);font-weight:700;font-size:0.85rem;"><i class="fas fa-eye" style="margin-left:6px;"></i> پرانا بل — دیکھنے کا موڈ</span>
+      <button onclick="clearAll()" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-family:'Noto Nastaliq Urdu',serif;font-size:0.78rem;cursor:pointer;"><i class="fas fa-arrow-right"></i> واپس</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      <button onclick="enableBillEdit()" class="btn btn-accent btn-sm" style="margin:0;"><i class="fas fa-edit"></i> بل تبدیل کریں (Edit)</button>
+      <button onclick="deleteCurrentBill()" class="btn btn-danger btn-sm" style="margin:0;background:var(--danger);"><i class="fas fa-trash-alt"></i> بل مٹائیں (Delete)</button>
+    </div>
   </div>
   <div id="bill-print">
     <h2 id="bShopName">دکان نام</h2>
@@ -492,7 +501,7 @@ body::before{
     <button class="btn btn-dark" onclick="printBill()"><i class="fas fa-print"></i> پرنٹ</button>
     <button class="btn btn-danger" onclick="savePDF()"><i class="fas fa-file-pdf"></i> PDF محفوظ</button>
     <button class="btn btn-wa" onclick="shareWAText()"><i class="fab fa-whatsapp"></i> ٹیکسٹ شیئر</button>
-    <button class="btn btn-wa2" onclick="shareWAPDF()"><i class="fab fa-whatsapp"></i> PDF شیئر</button>
+    <button class="btn btn-wa2" onclick="shareWAPDF()"><i class="fas fa-image"></i> بل امیج شیئر</button>
     <button class="btn btn-outline" onclick="clearAll()"><i class="fas fa-broom"></i> صاف کریں</button>
     <button class="btn btn-accent" id="closeOrderBtn" onclick="confirmCloseOrder()"><i class="fas fa-check-circle"></i> آرڈر بند کریں</button>
   </div>
@@ -600,6 +609,11 @@ let bills    = JSON.parse(localStorage.getItem('ck_bills'))   || [];
 let shopInfo = JSON.parse(localStorage.getItem('ck_shop'))    || {name:'چکن ماسٹر شاپ',address:'پتہ درج نہیں',phone:'0000000000'};
 let selectedID   = 0;
 let currentHistID = 0;
+
+// Variables for editing and deletion functionality
+let loadedOrder = null;
+let loadedClientId = 0;
+let editingBillId = null;
 
 // ============ INIT ============
 function start() {
@@ -1064,7 +1078,7 @@ function getBillHTML() {
   var grandOwed = tot + pend - disc;
   var totalPaid = payments.reduce(function(s, p){ return s + p.amt; }, 0);
   var rem       = grandOwed - totalPaid;
-  var billNo    = Date.now().toString().slice(-6);
+  var billNo    = (loadedOrder && loadedOrder.id) ? loadedOrder.id : Date.now().toString().slice(-6);
   var today     = new Date().toLocaleDateString('en-PK');
 
   // Build item rows
@@ -1289,19 +1303,48 @@ function savePDF() {
   });
 }
 
+// Updated to render and share bill as a JPEG image instead of HTML
 async function shareWAPDF() {
-  // Try Web Share API with blob first; fall back to new window print
+  const billElement = document.getElementById('bill-print');
+  if (!billElement) return;
+
   try {
-    var html = getBillHTML();
-    var blob = new Blob([html], { type: 'text/html' });
-    var file = new File([blob], 'Bill.html', { type: 'text/html' });
-    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: shopInfo.name, text: 'بل' });
-      return;
-    }
-  } catch(e) {}
-  // Fallback: open in new window for print-to-PDF
-  savePDF();
+    // Render the bill element to canvas
+    const canvas = await html2canvas(billElement, {
+      scale: 2, // Better image quality
+      useCORS: true,
+      backgroundColor: '#ffffff'
+    });
+    
+    // Convert the canvas to a JPEG Blob
+    canvas.toBlob(async (blob) => {
+      if (!blob) {
+        showInfo('غلطی', 'تصویر بنانے میں ناکامی ہوئی!', 'exclamation-circle', 'var(--danger)');
+        return;
+      }
+      
+      const file = new File([blob], `bill-${Date.now()}.jpg`, { type: 'image/jpeg' });
+      
+      // Use Web Share API if supported and files can be shared
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: shopInfo.name,
+          text: 'آرڈر کا بل'
+        });
+      } else {
+        // Fallback: download image if system share is not supported
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `bill-${Date.now()}.jpg`;
+        a.click();
+        showInfo('بل امیج', 'تصویر ڈاؤن لوڈ ہو گئی ہے۔ آپ اسے خود مینوئلی شیئر کر سکتے ہیں۔', 'info-circle', 'var(--accent)');
+      }
+    }, 'image/jpeg', 0.9);
+  } catch(e) {
+    console.error(e);
+    showInfo('غلطی', 'تصویر بنانے یا شیئر کرنے میں کوئی مسئلہ پیش آیا!', 'exclamation-circle', 'var(--danger)');
+  }
 }
 
 
@@ -1309,8 +1352,8 @@ function shareWAText() {
   var x    = parseFloat(document.getElementById('mundiRate').value)||0;
   var cust = document.getElementById('outCust').innerText;
   var tot  = parseFloat(document.getElementById('outTotal').innerText)||0;
-  var dv   = parseFloat(document.getElementById('discAmount')?.value)||0;
-  var disc = discType==='%' ? Math.round(tot*dv/100) : Math.min(dv,tot);
+  var _d   = parseFloat(document.getElementById('discAmount')?.value)||0;
+  var disc = discType==='%' ? Math.round(tot*_d/100) : Math.min(_d,tot);
   var _cu  = selectedID>0 ? clients.find(function(c){return c.id===selectedID;}) : null;
   var pend = _cu ? (_cu.balance||0) : 0;
   var totalPaid = payments.reduce(function(s,p){return s+p.amt;},0);
@@ -1348,6 +1391,10 @@ function newOrder() {
 }
 function clearAll() {
   isPreviewMode = false;
+  editingBillId = null;
+  loadedOrder = null;
+  loadedClientId = 0;
+  document.getElementById('closeOrderBtn').innerHTML = '<i class="fas fa-check-circle"></i> آرڈر بند کریں';
   clearInputs(); cancelCust();
   document.getElementById('previewBanner').style.display = 'none';
   document.getElementById('editActionRow').style.display = 'grid';
@@ -1357,7 +1404,11 @@ function clearAll() {
 }
 
 function confirmCloseOrder() {
-  askConfirm('آرڈر بند کریں','کیا آپ یہ آرڈر مکمل کر کے محفوظ کرنا چاہتے ہیں؟', finalizeOrder);
+  if (editingBillId) {
+    askConfirm('بل تبدیل کریں', 'کیا آپ واقعی اس بل کو اپ ڈیٹ کرنا چاہتے ہیں؟', finalizeOrder);
+  } else {
+    askConfirm('آرڈر بند کریں','کیا آپ یہ آرڈر مکمل کر کے محفوظ کرنا چاہتے ہیں؟', finalizeOrder);
+  }
 }
 
 function openPayModal() {
@@ -1429,7 +1480,7 @@ function finalizeOrder() {
     return;
   }
   const order = {
-    id:       Date.now().toString().slice(-6),
+    id:       editingBillId || Date.now().toString().slice(-6),
     date:     new Date().toLocaleDateString('en-PK'),
     name:     document.getElementById('outCust').innerText,
     total:    t - disc,
@@ -1438,6 +1489,50 @@ function finalizeOrder() {
     payments: payments.map(p=>({method:p.method,icon:p.icon,amt:p.amt})),
     items:    items.map(i=>({name:i.name,qty:parseFloat(document.getElementById('q-'+i.id)?.value)||0})).filter(i=>i.qty>0)
   };
+
+  if (editingBillId) {
+    // UPDATE MODE
+    const oldBillIdx = bills.findIndex(b => b.id === editingBillId);
+    if (oldBillIdx !== -1) {
+      bills[oldBillIdx] = order;
+    } else {
+      bills.unshift(order);
+    }
+    localStorage.setItem('ck_bills', JSON.stringify(bills));
+
+    // Clean old client if client was changed
+    if (loadedClientId !== 0 && loadedClientId !== selectedID) {
+      const oldCu = clients.find(cl => cl.id === loadedClientId);
+      if (oldCu) {
+        oldCu.history = (oldCu.history || []).filter(h => h.id !== editingBillId && h.billId !== editingBillId);
+        oldCu.balance = Math.max(0, oldCu.history.reduce((sum, h) => sum + h.total, 0));
+      }
+    }
+
+    // Update current client
+    if (selectedID !== 0) {
+      const cu = clients.find(cl => cl.id === selectedID);
+      if (cu) {
+        cu.history = (cu.history || []).filter(h => h.id !== editingBillId && h.billId !== editingBillId);
+        cu.history.push(order);
+        if (totalPaid > 0) {
+          const methodStr = payments.map(p=>p.method+' Rs '+p.amt).join(' + ');
+          cu.history.push({id:'Pay',date:order.date,total:-totalPaid,type:'Payment',method:methodStr, billId: order.id});
+        }
+        cu.balance = Math.max(0, cu.history.reduce((sum, h) => sum + h.total, 0));
+      }
+    }
+    localStorage.setItem('ck_clients', JSON.stringify(clients));
+
+    editingBillId = null;
+    document.getElementById('closeOrderBtn').innerHTML = '<i class="fas fa-check-circle"></i> آرڈر بند کریں';
+    showInfo('الحمدللہ','آرڈر کامیابی سے تبدیل ہوگیا!','check-circle','var(--success)');
+    clearAll();
+    updateLedger();
+    return;
+  }
+
+  // ORIGINAL CREATION MODE
   bills.unshift(order);
   localStorage.setItem('ck_bills', JSON.stringify(bills.slice(0,300)));
   if(selectedID !== 0) {
@@ -1447,7 +1542,7 @@ function finalizeOrder() {
       cu.history.push(order);
       if(totalPaid > 0){
         const methodStr = payments.map(p=>p.method+' Rs '+p.amt).join(' + ');
-        cu.history.push({id:'Pay',date:order.date,total:-totalPaid,type:'Payment',method:methodStr});
+        cu.history.push({id:'Pay',date:order.date,total:-totalPaid,type:'Payment',method:methodStr, billId: order.id});
       }
       cu.balance = Math.max(0,(cu.balance||0)+(order.total-totalPaid));
       localStorage.setItem('ck_clients',JSON.stringify(clients));
@@ -1456,8 +1551,8 @@ function finalizeOrder() {
   showInfo('الحمدللہ','آرڈر کامیابی سے محفوظ ہوگیا!','check-circle','var(--success)');
   clearInputs(); cancelCust();
   nav('shop',document.querySelectorAll('.nav-item')[0]);
+  updateLedger();
 }
-
 
 // ============ LEDGER ============
 function filterLedger(q){
@@ -1491,23 +1586,6 @@ function updateLedger() {
   if(document.getElementById('lTodaySale')) document.getElementById('lTodaySale').innerText = 'Rs '+todaySale;
   if(document.getElementById('lBillCount')) document.getElementById('lBillCount').innerText = bills.length;
   renderLedgerCards(clients);
-}
-function _updateLedgerOLD() {
-  const total = clients.reduce((a, c) => a + (c.balance||0), 0);
-
-  let html = '';
-  [...clients].sort((a,b) => (b.balance||0) - (a.balance||0)).forEach(c => {
-    const z = (c.balance||0) <= 0 ? ' zero' : '';
-    html += `<div class="client-card" onclick="openLedgerDetail(${c.id})">
-      <div>
-        <div class="cc-name">${c.name}</div>
-        <div class="cc-shop">${c.shopName||''}${c.phone?' · '+c.phone:''}</div>
-      </div>
-      <div class="cc-bal${z}" style="font-family:sans-serif;">Rs ${c.balance||0}</div>
-    </div>`;
-  });
-  document.getElementById('ledgerCardsContainer').innerHTML =
-    html || '<div style="text-align:center;color:var(--muted);padding:30px;font-size:0.9rem;">کوئی کسٹمر نہیں</div>';
 }
 
 function openLedgerDetail(id) {
@@ -1565,6 +1643,10 @@ function recordPayment() {
 function loadBillData(order, cid, cname) {
   clearInputs();
   isPreviewMode = true;
+  loadedOrder = order;
+  loadedClientId = cid;
+  editingBillId = null;
+
   document.getElementById('mundiRate').value = order.mundi || 0;
   pickCust(cid, cname);
   (order.items||[]).forEach(oi => {
@@ -1585,6 +1667,55 @@ function loadBillData(order, cid, cname) {
   document.getElementById('editActionRow').style.display = 'none';
   document.getElementById('closeOrderBtn').style.display = 'none';
   document.getElementById('discountToggleRow').style.display = 'none';
+}
+
+function enableBillEdit() {
+  if(!loadedOrder) return;
+  editingBillId = loadedOrder.id;
+  isPreviewMode = false;
+  document.getElementById('previewBanner').style.display = 'none';
+  document.getElementById('editActionRow').style.display = 'grid';
+  document.getElementById('closeOrderBtn').style.display = 'block';
+  document.getElementById('discountToggleRow').style.display = 'block';
+  document.getElementById('closeOrderBtn').innerHTML = '<i class="fas fa-save"></i> بل تبدیل کریں (Update)';
+}
+
+function deleteCurrentBill() {
+  if(!loadedOrder) return;
+  askConfirm('بل حذف کریں', `کیا آپ واقعی بل #${loadedOrder.id} کو حذف کرنا چاہتے ہیں؟`, () => {
+    // Delete from bills array
+    bills = bills.filter(b => b.id !== loadedOrder.id);
+    localStorage.setItem('ck_bills', JSON.stringify(bills));
+
+    // Delete from client if client is associated
+    if(loadedClientId > 0) {
+      const cu = clients.find(cl => cl.id === loadedClientId);
+      if(cu) {
+        cu.history = (cu.history || []).filter(h => h.id !== loadedOrder.id && h.billId !== loadedOrder.id);
+        cu.balance = Math.max(0, cu.history.reduce((sum, h) => sum + h.total, 0));
+        localStorage.setItem('ck_clients', JSON.stringify(clients));
+      }
+    }
+    clearAll();
+    updateLedger();
+    showInfo('کامیابی', 'بل کو کامیابی سے حذف کر دیا گیا ہے!');
+  });
+}
+
+function deleteCurrentCustomer() {
+  const c = clients.find(cl => cl.id === currentHistID);
+  if(!c) return;
+  askConfirm(
+    'کسٹمر حذف کریں',
+    `کیا آپ واقعی کسٹمر "${c.name}" کو حذف کرنا چاہتے ہیں؟ اس کے تمام بل اور ادھار کا ریکارڈ مٹ جائے گا۔`,
+    () => {
+      clients = clients.filter(cl => cl.id !== currentHistID);
+      localStorage.setItem('ck_clients', JSON.stringify(clients));
+      closeModal('historyModal');
+      updateLedger();
+      showInfo('کامیابی', 'کسٹمر کو کامیابی سے حذف کر دیا گیا ہے!');
+    }
+  );
 }
 
 function saveNewCust() {
